@@ -269,7 +269,7 @@ function AdminConnection (sock, password, client, version) {
 
 exports.AdminConnection = AdminConnection
 // basic usage:
- var a = AdminConnection(net.createConnection(3977, "localhost"), "1");
+ var a = AdminConnection(net.createConnection(3977, "localhost"), "password");
  a.on('packet_welcome', function() {
     console.log("connected");
     a.send_chat(tcp_enum.Actions.SERVER_MESSAGE, tcp_enum.DestTypes.BROADCAST, 0, "hello, world");
