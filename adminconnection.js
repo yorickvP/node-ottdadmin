@@ -267,12 +267,6 @@ function AdminConnection (sock, password, client, version) {
     this.send_join(password, client, version)
 }
 
-exports.AdminConnection = AdminConnection
-// basic usage:
- var a = AdminConnection(net.createConnection(3977, "localhost"), "password");
- a.on('packet_welcome', function() {
-    console.log("connected");
-    a.send_chat(tcp_enum.Actions.SERVER_MESSAGE, tcp_enum.DestTypes.BROADCAST, 0, "hello, world");
-    a.send_quit();
-    console.log("disconnected"); });
+module.exports = AdminConnection
+module.exports.AdminConnection = AdminConnection
 
