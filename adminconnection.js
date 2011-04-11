@@ -23,6 +23,7 @@ var bufferlist = require('./node-bufferlist')
 var binary = require('./binary')
 var put = require('./node-put')
 var net = require('net')
+
 var AdminPackets = tcp_enum.AdminPackets
 var EventEmitter = require('events').EventEmitter
 
@@ -32,9 +33,9 @@ var zeroterm = (function()          {
     var b = put().word8(0).buffer()
     return function() { return b }  })()
 
-function sendpacket(s, t, p)       {
+function sendpacket(s, t, p)        {
     put().word16le(p ? p.length + 3 : 3).word8(t).write(s)
-    if(p) s.write(p.take())        }
+    if(p) s.write(p.take())         }
 
 function bin(vars) { return binary(bufferlist().push(vars.pckt)) }
 
@@ -43,38 +44,39 @@ function AdminConnection (sock, password, client, version) {
     if (!(this instanceof AdminConnection)) return new AdminConnection(sock, password, client, version)
 
     var incoming_buffer = new bufferlist
-    var info = (this.info = {allowed_updatefrequencies:{}})
     var self = this
     sock.on('data', function(data) { incoming_buffer.push(data) })
+    /* helper function that saves me from doing function() { self.emit('something', ...) } every time */
+    function mkemitter() { 
+        var a = [].slice.call(arguments)
+        return function() { self.emit.apply(self, a) } }
+    /* helper function that saves me from doing function(x) { self.emit('something', ..., x) } every time */
+    function mkfemitter() { return self.emit.bind.apply(self.emit, [self].concat([].slice.call(arguments))) }
+
     binary(incoming_buffer).forever(function(vars) {
-            this.getWord16le('packetlength')
-                .getWord8('packettype')
-                .getBuffer('pckt', function(vars) {return vars.packetlength - 3})
+            this.getWord16le('pcktlen')
+                .getWord8('pckttype')
+                .getBuffer('pckt', function(v) {return v.pcktlen - 3})
 
-                .when('packettype', AdminPackets.SERVER_PROTOCOL, function(vars)   {
-                    bin(vars)
+                .when('pckttype', AdminPackets.SERVER_PROTOCOL, function(v)                   {
+                    var fqs = {};
+                    bin(v)
                         .getWord8('version')
-                        .tap(function(vars) { info.protocolversion = vars.version })
                         .getWord8('datafollowing')
-                        .unless('datafollowing', 0, function parsefun(vars) {
-                            this.getWord16le('freqtype')
-                                .getWord16le('freqbm')
-                                .tap(function(vars) {
-                                    info.allowed_updatefrequencies[vars.freqtype] = vars.freqbm })
+                        .unless('datafollowing', 0, function parsefun()     {
+                            this.getWord16le('fqtype')
+                                .getWord16le('fqbm')
+                                .tap(function(v) { fqs[v.fqtype] = v.fqbm })
                                 .getWord8('datafollowing')
-                                .unless('datafollowing', 0, parsefun)})
-                        .tap(function(vars) { self.emit('packet_protocol') }).end()})
+                                .unless('datafollowing', 0, parsefun)       })
+                        .tap(function(v) { self.emit('protocol', v.version, fqs) }).end()     })
 
-                .when('packettype', AdminPackets.SERVER_WELCOME, function(vars) {
-                    bin(vars)
+                .when('pckttype', AdminPackets.SERVER_WELCOME, function(v)                    {
+                    bin(v)
                         .zstring('name')
                         .zstring('version')
                         .getWord8('dedicated')
-                        .tap(function(vars) {
-                            info.servername = vars.name.toString('utf8')
-                            info.ottdversion = vars.version.toString('utf8')
-                            info.isdedicated = !!vars.dedicated
-                        })
+                        .tap(function(v) { v.dedicated = !!v.dedicated })
                         .into('map', function() {
                             this.zstring('name')
                                 .getWord32le('seed')
@@ -82,59 +84,66 @@ function AdminConnection (sock, password, client, version) {
                                 .getWord32le('startdate')
                                 .getWord16le('mapheight')
                                 .getWord16le('mapwidth')
-                                .tap(function(m) { info.map = m; m.name = m.name.toString() })
-                        }).tap(function(vars) { self.emit('packet_welcome') }).end()})
+                        }).tap(mkfemitter('welcome')).end()                                   })
                 
-                .when('packettype', AdminPackets.SERVER_FULL, function(vars)                  {
-                    self.emit('error', 'FULL')                                                })
-                .when('packettype', AdminPackets.SERVER_BANNED, function(vars)                {
-                    self.emit('error', 'BANNED')                                              })
-                .when('packettype', AdminPackets.SERVER_ERROR, function(vars)                 {
-                    bin(vars)
+                .when('pckttype', AdminPackets.SERVER_FULL, mkemitter('error', 'FULL'))
+
+                .when('pckttype', AdminPackets.SERVER_BANNED, mkemitter('error', 'BANNED'))
+
+                .when('pckttype', AdminPackets.SERVER_ERROR, function(v)                      {
+                    bin(v)
                         .getWord8('code')
-                        .tap(function(vars) { self.emit('error', 'CODE', vars.code)}).end()   })
-                .when('packettype', AdminPackets.SERVER_NEWGAME, function(vars)               {
-                    self.emit('newgame')                                                      })
-                .when('packettype', AdminPackets.SERVER_SHUTDOWN, function(vars)              {
-                    self.emit('shutdown')                                                     })
-                .when('packettype', AdminPackets.SERVER_DATE, function(vars)                  {
-                    bin(vars)
+                        .tap(function(v) { self.emit('error', 'CODE', v.code)}).end()         })
+
+                .when('pckttype', AdminPackets.SERVER_NEWGAME, mkemitter('newgame'))
+
+                .when('pckttype', AdminPackets.SERVER_SHUTDOWN, mkemitter('shutdown'))
+
+                .when('pckttype', AdminPackets.SERVER_DATE, function(v)                       {
+                    bin(v)
                         .getWord32le('date')
-                        .tap(function(vars) { self.emit('date', vars.date) }).end()           })
-                .when('packettype', AdminPackets.SERVER_CLIENT_JOIN, function(vars)           {
-                    bin(vars)
+                        .tap(function(v) { self.emit('date', v.date) }).end()                 })
+
+                .when('pckttype', AdminPackets.SERVER_CLIENT_JOIN, function(v)                {
+                    bin(v)
                         .getWord32le('id')
-                        .tap(function(vars) { self.emit('clientjoin', vars.id) }).end()       })
-                .when('packettype', AdminPackets.SERVER_CLIENT_INFO, function(vars)           {
-                    bin(vars)
+                        .tap(function(v) { self.emit('clientjoin', v.id) }).end()             })
+
+                .when('pckttype', AdminPackets.SERVER_CLIENT_INFO, function(v)                {
+                    bin(v)
                         .getWord32le('id')
                         .zstring('ip')
                         .zstring('name')
                         .getWord8('lang')
                         .getWord32le('joindate')
                         .getWord8('company')
-                        .tap(function(client) { self.emit('clientinfo', client) }).end()      })
-                .when('packettype', AdminPackets.SERVER_CLIENT_UPDATE, function(vars)         {
-                    bin(vars)
+                        .tap(mkfemitter('clientinfo')).end()                                  })
+
+                .when('pckttype', AdminPackets.SERVER_CLIENT_UPDATE, function(v)              {
+                    bin(v)
                         .getWord32le('id')
                         .zstring('name')
                         .getWord8('company')
-                        .tap(function(client) { self.emit('clientupdate', client) }).end()    })
-                .when('packettype', AdminPackets.SERVER_CLIENT_QUIT, function(vars)           {
-                    bin(vars)
+                        .tap(mkfemitter('clientupdate')).end()                                })
+
+                .when('pckttype', AdminPackets.SERVER_CLIENT_QUIT, function(v)                {
+                    bin(v)
                         .getWord32le('id')
-                        .tap(function(vars) { self.emit('clientquit', vars.id) }).end()       })
-                .when('packettype', AdminPackets.SERVER_CLIENT_ERROR, function(vars)          {
-                    bin(vars)
+                        .tap(function(v) { self.emit('clientquit', v.id) }).end()             })
+
+                .when('pckttype', AdminPackets.SERVER_CLIENT_ERROR, function(v)               {
+                    bin(v)
                         .getWord32le('id')
                         .getWord8('err')
                         .tap(function(v) { self.emit('clienterror', v.id, v.err)}).end()      })
-                .when('packettype', AdminPackets.SERVER_COMPANY_NEW, function(vars)           {
-                    bin(vars)
+
+                .when('pckttype', AdminPackets.SERVER_COMPANY_NEW, function(v)                {
+                    bin(v)
                         .getWord8('id')
-                        .tap(function(vars) { self.emit('companynew', vars.id) }).end()       })
-                .when('packettype', AdminPackets.SERVER_COMPANY_INFO, function(vars)          {
-                    bin(vars)
+                        .tap(function(v) { self.emit('companynew', v.id) }).end()             })
+
+                .when('pckttype', AdminPackets.SERVER_COMPANY_INFO, function(v)               {
+                    bin(v)
                         .getWord8('id')
                         .zstring('name')
                         .zstring('manager')
@@ -142,9 +151,10 @@ function AdminConnection (sock, password, client, version) {
                         .getWord8('protected')
                         .getWord32le('startyear')
                         .getWord8('isai')
-                        .tap(function(company) { self.emit('companyinfo', company) }).end()   })
-                .when('packettype', AdminPackets.SERVER_COMPANY_UPDATE, function(vars)        {
-                    bin(vars)
+                        .tap(mkfemitter('companyinfo')).end()                                 })
+
+                .when('pckttype', AdminPackets.SERVER_COMPANY_UPDATE, function(v)             {
+                    bin(v)
                         .getWord8('id')
                         .zstring('name')
                         .zstring('manager')
@@ -153,71 +163,82 @@ function AdminConnection (sock, password, client, version) {
                         .getWord8('bankruptcy')
                         .getWord8('share1').getWord8('share2')
                         .getWord8('share3').getWord8('share4')
-                        .tap(function(company) { self.emit('companyupdate', company) }).end() })
-                .when('packettype', AdminPackets.SERVER_COMPANY_REMOVE, function(vars)        {
-                    bin(vars)
+                        .tap(mkfemitter('companyupdate')).end()                               })
+
+                .when('pckttype', AdminPackets.SERVER_COMPANY_REMOVE, function(v)             {
+                    bin(v)
                         .getWord8('id')
                         .getWord8('reason')
                         .tap(function(v) { self.emit('companyremove', v.id, v.reason) }).end()})
-                .when('packettype', AdminPackets.SERVER_COMPANY_ECONOMY, function(vars)       {
-                    bin(vars)
-                        .getWord8('id')
-                        .getWord64bes('money')
-                        .getWord64be('loan')
-                        .getWord64bes('income')
-                        .getWord64be('value')
-                        .getWord16be('performance')
-                        .getWord16be('cargo')
-                        .getWord64be('pvalue')
-                        .getWord16be('pperformance')
-                        .getWord16be('pcargo')
-                        .tap(function(econ) { self.emit('companyeconomy', econ) }).end()      })
-                .when('packettype', AdminPackets.SERVER_COMPANY_STATS, function(vars)         {
-                    bin(vars)
-                        .getWord8('id')
-                        .getWord16be('trains')
-                        .getWord16be('lorries')
-                        .getWord16be('busses')
-                        .getWord16be('planes')
-                        .getWord16be('ships')
-                        .getWord16be('tstations')
-                        .getWord16be('lstations')
-                        .getWord16be('bstations')
-                        .getWord16be('astations')
-                        .getWord16be('sstations')
-                        .tap(function(stats) { self.emit('companystats', stats) }).end()      })
 
-                .when('packettype', AdminPackets.SERVER_CHAT, function(vars)                  {
-                    bin(vars)
+                .when('pckttype', AdminPackets.SERVER_COMPANY_ECONOMY, function(v)            {
+                    bin(v)
+                        .getWord8('id')
+                        .getWord64les('money')
+                        .getWord64le('loan')
+                        .getWord64les('income')
+                        .into('lastquarter', function() {
+                            this.getWord64le('value')
+                                .getWord16le('performance')
+                                .getWord16le('cargo')   })
+                        .into('prevquarter', function() {
+                            this.getWord64le('value')
+                                .getWord16le('performance')
+                                .getWord16le('cargo')   })
+                        .tap(mkfemitter('companyeconomy')).end()                    })
+
+                .when('pckttype', AdminPackets.SERVER_COMPANY_STATS, function(v)              {
+                    bin(v)
+                        .getWord8('id')
+                        .into('vehicles', function() {
+                            this.getWord16le('trains')
+                                .getWord16le('lorries')
+                                .getWord16le('busses')
+                                .getWord16le('planes')
+                                .getWord16le('ships')})
+                        .into('stations', function() {
+                            this.getWord16le('trains')
+                                .getWord16le('lorries')
+                                .getWord16le('busses')
+                                .getWord16le('planes')
+                                .getWord16le('ships')})
+                        .tap(mkfemitter('companystats')).end()                                })
+
+                .when('pckttype', AdminPackets.SERVER_CHAT, function(v)                       {
+                    bin(v)
                         .getWord8('action')
                         .getWord8('desttype')
-                        .getWord32be('id')
+                        .getWord32le('id')
                         .zstring('message')
-                        .getWord64be('money')
-                        .tap(function(chat) { self.emit('chat', chat) }).end()                })
-                .when('packettype', AdminPackets.SERVER_RCON, function(vars)                  {
-                    bin(vars)
+                        .getWord64le('money')
+                        .tap(mkfemitter('chat')).end()                                        })
+
+                .when('pckttype', AdminPackets.SERVER_RCON, function(v)                       {
+                    bin(v)
                         .getWord16('colour')
                         .zstring('output')
                         .tap(function(v) { self.emit('rcon', v.colour, v.output) }).end()     })
-                .when('packettype', AdminPackets.SERVER_CONSOLE, function(vars)               {
-                    bin(vars)
+
+                .when('pckttype', AdminPackets.SERVER_CONSOLE, function(v)                    {
+                    bin(v)
                         .zstring('origin')
                         .zstring('output')
                         .tap(function(v) { self.emit('console', v.origin, v.output) }).end()  })
-                .when('packettype', AdminPackets.SERVER_CMD_NAMES, function(vars)             {
+
+                .when('pckttype', AdminPackets.SERVER_CMD_NAMES, function(v)                  {
                     var names = {}
-                    bin(vars)
-                     .getWord8('datafollowing')
-                     .unless('datafollowing', 0, function parsefun(vars)     {
+                    bin(v)
+                        .getWord8('datafollowing')
+                        .unless('datafollowing', 0, function parsefun()     {
                         this.getWord16le('id')
                             .zstring('name')
                             .tap(function(v) { names[v.id] = v.name })
                             .getWord8('datafollowing')
-                            .unless('datafollowing', 0, parsefun)            })
-                     .tap(function() { self.emit('cmdnames', names) })                        })
-                .when('packettype', AdminPackets.SERVER_CMD_LOGGING, function(vars)           {
-                    bin(vars)
+                            .unless('datafollowing', 0, parsefun)           })
+                        .tap(mkemitter('cmdnames', names)).end()                              })
+
+                .when('pckttype', AdminPackets.SERVER_CMD_LOGGING, function(v)                {
+                    bin(v)
                         .getWord32le('clientid')
                         .getWord8('companyid')
                         .getWord16le('cmdid')
@@ -226,7 +247,7 @@ function AdminConnection (sock, password, client, version) {
                         .getWord32le('tile')
                         .zstring('text')
                         .getWord32le('frame')
-                        .tap(function(cmd) { self.emit('cmdlogging', cmd)})                   })
+                        .tap(mkfemitter('cmdlogging')).end()                                  })
         }).end()
 
     this.send_join = function(password, client, version)                          {
@@ -235,9 +256,9 @@ function AdminConnection (sock, password, client, version) {
                , Buffer(client ? client : "node-ottdadmin"), zeroterm()
                , Buffer(version ? version : "0"), zeroterm()                   )) }
 
-    this.send_quit = function() { 
+    this.send_quit = function()                                                   { 
         sendpacket(sock, AdminPackets.ADMIN_QUIT)
-        sock.end()              }
+        sock.end()                                                                }
 
     this.send_update_frequency = function(type, frequency)                        {
         sendpacket(sock, AdminPackets.ADMIN_UPDATE_FREQUENCY, bufferlist().push(
@@ -249,21 +270,22 @@ function AdminConnection (sock, password, client, version) {
     this.send_poll = function(type, id)                                           {
         sendpacket(sock, AdminPackets.ADMIN_POLL            , bufferlist().push(
             put()
-            .word8(type)
-            .word32le(id)
-            .buffer()                                                          )) }
+                .word8(type)
+                .word32le(id)
+                .buffer()                                                      )) }
 
     this.send_chat = function(action, desttype, id, msg)                          {
         sendpacket(sock, AdminPackets.ADMIN_CHAT            , bufferlist().push(
             put()
-            .word8(action)
-            .word8(desttype)
-            .word32le(id)
-            .buffer(), Buffer(msg), zeroterm()                                 )) }
+                .word8(action)
+                .word8(desttype)
+                .word32le(id)
+                .buffer(), Buffer(msg), zeroterm()                             )) }
 
     this.send_rcon = function(cmd)                                                {
         sendpacket(sock, AdminPackets.ADMIN_RCON, bufferlist().push(
             Buffer(cmd), zeroterm()                                            )) }
+
     this.send_join(password, client, version)
 }
 

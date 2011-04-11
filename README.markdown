@@ -9,7 +9,7 @@ Basic Example
     var net             = require('net');
     
     var connection = AdminConnection(net.createConnection(3977), "password");
-    connection.on('packet_welcome', function() {
+    connection.on('welcome', function() {
         console.log("connected");
         connection.send_chat(tcp_enum.Actions.SERVER_MESSAGE, tcp_enum.DestTypes.BROADCAST, 0, "hello, world!");
         connection.send_quit();
