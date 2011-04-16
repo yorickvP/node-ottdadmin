@@ -2,15 +2,14 @@
 const DI4Y = 1461 /* days in 4 years */
 const DI100Y = 36524 /* days in 100 years */
 const DI400Y = 146097 /* days in 400 years */
-const _days_before_month = [0,0,31,59,90,120,151,181,212,243,273,304,334]
+const _days_in_month = [0,31,28,31,30,31,30,31,31,30,31,30,31];
+const _days_before_month = [0].concat(_days_in_month.reduce(function(p, c) {
+    p.push(p.length > 0 ? p[p.length-1] + c : 0); return p }, [])).slice(0, -1);
+function isLeap(y)           { return (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) }
+function days_in_month(y, m) { return (m == 2 && isLeap(y)) ? 29 : _days_in_month[m] }
 
-function days_in_month(year, month)                             {
-    return (month==2 &&
-            (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) ?
-            29 : [0,31,28,31,30,31,30,31,31,30,31,30,31][month] }
-
-exports.parseOTTDDate = function(ordinal) {
-    ordinal -= 365; // I think
+exports.processOTTDDate = function(ordinal) {
+    ordinal -= 365; // I think, because openttd dates start a year later
     var year,month,day, n, n1, n4, n100, n400, leapyear, preceding;
     /* ordinal is a 1-based index, starting at 1-Jan-1. The pattern of
     * leap years repeats exactly every 400 years. The basic strategy is
@@ -68,7 +67,6 @@ exports.parseOTTDDate = function(ordinal) {
     * large.
     */
     leapyear = n1 == 3 && (n4 != 24 || n100 == 3);
-    //assert(leapyear == is_leap(*year));
     month = (n + 50) >> 5;
     preceding = (_days_before_month[month] + (month > 2 && leapyear));
     if (preceding > n) {
